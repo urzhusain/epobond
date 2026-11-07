@@ -248,7 +248,7 @@ function renderReps(){
   const box=$('reps'); box.innerHTML='';
   S.reps.forEach((r,i)=>{
     const d=document.createElement('div'); d.className='rep';
-    d.innerHTML = `<input type="text" placeholder="Old word, e.g. Parson" value="${esc(r.from)}"><span>→</span><input type="text" placeholder="New word, e.g. Epobond" value="${esc(r.to)}"><button title="Remove">✕</button>`;
+    d.innerHTML = `<input type="text" placeholder="Old word, e.g. Parson" value="${esc(r.from)}"><span>→</span><input type="text" placeholder="Leave empty to remove" value="${esc(r.to)}"><button title="Remove">✕</button>`;
     const [a,,b,x] = d.children;
     a.oninput=()=>{ r.from=a.value; r.auto=false; store.set('reps',S.reps.filter(x=>!x.auto)); markDirty(); countMatchesSoon(); };
     b.oninput=()=>{ r.to=b.value; r.auto=false; store.set('reps',S.reps.filter(x=>!x.auto)); markDirty(); };
@@ -276,7 +276,7 @@ function applyReps(text){
 }
 function countMatches(){
   if(!S.pages.length){ $('repInfo').textContent=''; return; }
-  let n=0; for(const p of S.pages) for(const ln of p.lines){ n += applyReps(ln.text).n; }
+  let n=0; for(const p of S.pages) for(const ln of p.lines){ n += lineReplace(ln).n; }
   $('repInfo').textContent = activeReps().length ? (n ? `${n} match${n>1?'es':''} found in the document` : 'No matches found yet') : '';
 }
 
@@ -418,11 +418,14 @@ async function findImages(page){
 function autoDetectLogos(){
   let n=0;
   for(const P of S.pages){
-    const area = P.vp1.width*P.vp1.height;
+    const area = P.vp1.width*P.vp1.height, view=P.vp1.viewBox, H=P.vp1.height;
     for(const r of P.images){
       const w=r[2]-r[0], h=r[3]-r[1];
       if(w<8||h<8) continue;
-      if(w*h > area*0.15) continue;          // skip full-page scans / backgrounds
+      if(w*h > area*0.06) continue;          // charts, photos, scans: not a logo
+      const inHeader = r[1] > view[3] - H*0.22, inFooter = r[3] < view[1] + H*0.12;
+      if(!inHeader && !inFooter) continue;   // logos live in the header or footer
+      if(S.boxes.some(b=>b.page===P.index && b.type==='logo' && Math.abs(b.r[0]-r[0])<2 && Math.abs(b.r[1]-r[1])<2)) continue;
       S.boxes.push({page:P.index, type:'logo', r:[r[0]-1,r[1]-1,r[2]+1,r[3]+1], auto:true}); n++;
     }
   }
@@ -602,6 +605,51 @@ async function loadMupdf(){
         .catch(e=>{ console.warn('mupdf unavailable', e); _mu=null; return null; });
   return _mu;
 }
+/* Replace across a whole line, even when the PDF stores a word in pieces ("3"+"401")
+   or letter-spaced ("P A R F I X"). Each new character keeps the style of the text it replaces. */
+function lineReplace(ln){
+  let chars=[];
+  ln.items.forEach((it,ii)=>{ const a=it.str.split(''); const n=Math.max(a.length,1);
+    a.forEach((ch,k)=>chars.push({ch, ii, ox: it.x + it.w*k/n, oxEnd: it.x + it.w*(k+1)/n})); });
+  const origStartsSpace = /^\s/.test(ln.text);
+  const ic = $('optCase').checked; let n=0;
+  for(const r of activeReps()){
+    const pat = r.from.trim().split('').map(c=> /\s/.test(c) ? '\\s*' : reEsc(c)).join('\\s*');
+    const re = new RegExp(pat, ic?'gi':'g');
+    const text = chars.map(c=>c.ch).join('');
+    const out=[]; let last=0, m;
+    while((m = re.exec(text))){
+      if(m[0].length===0){ re.lastIndex++; continue; }
+      n++;
+      for(let i=last;i<m.index;i++) out.push(chars[i]);
+      const first=chars[m.index], lastC=chars[m.index+m[0].length-1];
+      const mt=m[0].replace(/\s+/g,'');
+      let to=r.to;
+      if(ic && mt!==r.from.replace(/\s+/g,'') && mt===mt.toUpperCase() && /[A-Z]/.test(mt)) to=r.to.toUpperCase();
+      to.split('').forEach(ch=>out.push({ch, ii:first.ii, ox:first.ox, oxEnd:lastC.oxEnd, rep:true}));
+      last = m.index + m[0].length;
+    }
+    for(let i=last;i<chars.length;i++) out.push(chars[i]);
+    chars = out;
+  }
+  if(!n) return {n:0};
+  // tidy spaces left behind by removed words
+  const tidy=[];
+  for(const c of chars){
+    const prev=tidy[tidy.length-1];
+    if(c.ch===' ' && (!prev ? !origStartsSpace : prev.ch===' ')) continue;
+    tidy.push(c);
+  }
+  while(tidy.length && tidy[tidy.length-1].ch===' ') tidy.pop();
+  // group into runs that share one original piece's style
+  const runs=[];
+  for(const c of tidy){
+    const r=runs[runs.length-1];
+    if(r && r.ii===c.ii){ r.text+=c.ch; r.oxEnd=Math.max(r.oxEnd,c.oxEnd); }
+    else runs.push({ii:c.ii, it:ln.items[c.ii], text:c.ch, ox:c.ox, oxEnd:c.oxEnd});
+  }
+  return {n, runs};
+}
 function inRect(r,x,y){ return x>=r[0]&&x<=r[2]&&y>=r[1]&&y<=r[3]; }
 
 async function buildPdf(){
@@ -617,13 +665,11 @@ async function buildPdf(){
     for(const ln of P.lines){
       const cx=(ln.x0+ln.x1)/2, cy=ln.y+ln.size*0.3;
       if(boxes.some(b=>inRect(b.r,cx,cy))) continue; // already handled by a box
-      const itemsNew = ln.items.map(it=>{ const r=applyReps(it.str); return {...it, out:r.out, n:r.n}; });
-      const nItem = itemsNew.reduce((a,i)=>a+i.n,0);
-      const lineRep = applyReps(ln.text);
-      if(!nItem && !lineRep.n) continue;
-      replaced += Math.max(nItem, lineRep.n);
+      const lr = lineReplace(ln);
+      if(!lr.n) continue;
+      replaced += lr.n;
       pp.rects.push([ln.x0-0.6, ln.y-ln.size*0.2, ln.x1+0.6, ln.y+ln.size*0.75]);
-      pp.lineJobs.push({ln, segs: nItem ? itemsNew.map(it=>({it, text:it.out})) : [{it:ln.items[0], text:lineRep.out, whole:true}], W, pageLeft, pageRight, textRight});
+      pp.lineJobs.push({ln, segs: lr.runs, W, pageLeft, pageRight, textRight});
     }
     plan.push(pp);
   }
@@ -666,17 +712,18 @@ async function buildPdf(){
 
   for(const pp of plan){
     const pg = pages[pp.index]; if(!pg) continue;
+    if(pp.lineJobs.length) pg.pushOperators(PDFLib.setCharacterSpacing(0), PDFLib.setWordSpacing(0), PDFLib.setCharacterSqueeze(100), PDFLib.setTextRise(0));
     if(!removed) for(const r of pp.rects) pg.drawRectangle({x:r[0],y:r[1],width:r[2]-r[0],height:r[3]-r[1],color:white});
     for(const job of pp.lineJobs){
       const {ln, segs, W, pageLeft, pageRight, textRight} = job;
-      const runs=[]; let shift=0;
+      const runs=[]; let cursor=null, prevEnd=null;
       for(const s of segs){
         const it=s.it; const font = pick(it.bold, it.italic, it.serif);
         const txt = clean(font, s.text); if(!txt) continue;
         const w = font.widthOfTextAtSize(txt, it.size);
-        const origW = s.whole ? (ln.x1-ln.x0) : it.w;
-        runs.push({x:it.x+shift, txt, font, size:it.size, w, color:it.color});
-        shift += w - origW;
+        const x = cursor===null ? s.ox : cursor + Math.max(0, s.ox - prevEnd);
+        runs.push({x, txt, font, size:it.size, w, color:it.color});
+        cursor = x + w; prevEnd = s.oxEnd;
       }
       if(!runs.length) continue;
       const x0=runs[0].x, x1=Math.max(...runs.map(r=>r.x+r.w));
