@@ -77,6 +77,19 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .box.details{border-color:var(--details);background:rgba(63,166,58,.10)}.box.details .tag{background:var(--details)}
 .box.erase{border-color:var(--erase);background:rgba(227,30,36,.10)}.box.erase .tag{background:var(--erase)}
 .empty{padding:60px 20px;text-align:center;color:var(--muted);background:#fff;border:1px solid var(--line);border-radius:12px;width:100%}
+.dlg{position:fixed;inset:0;background:rgba(18,30,40,.55);display:none;align-items:center;justify-content:center;padding:16px;z-index:50}
+.dlg.show{display:flex}
+.dlg .in{background:#fff;border-radius:14px;max-width:460px;width:100%;max-height:88vh;overflow:auto;padding:18px 18px 14px;box-shadow:0 20px 50px rgba(0,0,0,.3)}
+.dlg h3{margin:0 0 4px;font-size:17px}
+.dlg p{margin:0 0 12px;font-size:13.5px;color:var(--muted)}
+.prod{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px}
+.prod .old{font-weight:800;font-size:15px;margin-bottom:6px}
+.prod .old span{font-weight:500;color:var(--muted);font-size:12px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.chips button{padding:5px 10px;font-size:12.5px;border-radius:999px}
+.chips button.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+.prod.keep input{opacity:.45}
+.need{color:var(--red);font-weight:700}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--navy);color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .2s;max-width:92vw;text-align:center}
 .toast.show{opacity:1}
 .matches{font-size:12.5px;color:var(--muted);margin-top:4px}
@@ -139,7 +152,8 @@ details.adv summary{cursor:pointer;font-size:13px;color:var(--muted);margin-top:
 
   <div class="card">
    <h2><span class="step">4</span>Replace words</h2>
-   <p class="hint" style="margin:0 0 8px">The old company name, its emails and phone numbers, and product names marked ™ or ® are filled in for you. Check them and add anything else, such as other product names.</p>
+   <p class="hint" style="margin:0 0 8px">The old company name, emails and phone numbers are filled in for you. You'll be asked what to call any product names found. Add anything else here.</p>
+   <div id="prodBox" hidden><label class="small" style="margin-top:0">Product names found</label><div id="prodList"></div><button id="prodEdit" style="margin-bottom:10px">Rename products</button><label class="small">Other words</label></div>
    <div id="reps"></div>
    <button id="addRep">+ Add word</button>
    <label class="chk"><input type="checkbox" id="optCase" checked> Ignore capitals (PARSON, Parson…)</label>
@@ -167,6 +181,12 @@ details.adv summary{cursor:pointer;font-size:13px;color:var(--muted);margin-top:
   <div class="pages" id="pagesResult" hidden></div>
  </div>
 </div>
+<div class="dlg" id="prodDlg"><div class="in">
+  <h3>What should these products be called?</h3>
+  <p>These product names were found in the document. Type the new name for each, or keep it as it is.</p>
+  <div id="prodRows"></div>
+  <div class="row" style="margin-top:4px"><button id="prodLater">Later</button><button id="prodOk" class="primary">Apply names</button></div>
+</div></div>
 <div class="toast" id="toast"></div>
 <p style="text-align:center;font-size:11.5px;color:#8a95a0;margin:6px 0 24px">Files are processed in your browser and never uploaded. Built with pdf.js, pdf-lib and MuPDF.</p>
 
@@ -205,7 +225,7 @@ S.logo = S.logoKey==='custom' ? store.get('logo', LOGOS.industrial) : (LOGOS[S.l
 $('pvIndustrial').src = LOGOS.industrial; $('pvConsumer').src = LOGOS.consumer;
 function showLogo(){ $('logoThumb').src = S.logo; document.querySelectorAll('.preset').forEach(b=>b.classList.toggle('on', b.dataset.logo===S.logoKey)); }
 showLogo();
-document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{ S.logoKey=b.dataset.logo; S.logo=LOGOS[S.logoKey]; store.set('logoKey',S.logoKey); showLogo(); markDirty(); if(S.pages.length) suggestSwaps(); toast((S.logoKey==='industrial'?'Industrial (Epobond Ultra)':'Consumer (Epobond)')+' logo selected'); });
+document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{ S.logoKey=b.dataset.logo; S.logo=LOGOS[S.logoKey]; store.set('logoKey',S.logoKey); showLogo(); markDirty(); toast((S.logoKey==='industrial'?'Industrial (Epobond Ultra)':'Consumer (Epobond)')+' logo selected'); });
 $('logoBtn').onclick = ()=> $('logoFile').click();
 $('logoFile').onchange = e => {
   const f = e.target.files[0]; if(!f) return;
@@ -241,7 +261,7 @@ $('addRep').onclick=()=>{ S.reps.push({from:'',to:''}); store.set('reps',S.reps)
 renderReps();
 let cmT; function countMatchesSoon(){ clearTimeout(cmT); cmT=setTimeout(countMatches, 250); }
 
-function activeReps(){ return S.reps.filter(r=>r.from && r.from.trim()); }
+function activeReps(){ return S.reps.filter(r=>r.from && r.from.trim()).concat((S.products||[]).filter(p=>!p.keep && p.to && p.to.trim()).map(p=>({from:p.from,to:p.to.trim()}))); }
 function reEsc(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
 function applyReps(text){
   const ic = $('optCase').checked; let out=text, n=0;
@@ -282,7 +302,7 @@ async function loadFile(f){
   if(!window.pdfjsLib || !window.PDFLib){ toast('The PDF tools did not load. Check your connection and reload.'); return; }
   if(!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)){ toast('Please choose a PDF file'); return; }
   setStatus('Opening…');
-  S.bytes = new Uint8Array(await f.arrayBuffer()); S.name=f.name; S.boxes=[]; S.pages=[]; S.resultBytes=null; S.oldName=null; S.oldBlock='';
+  S.bytes = new Uint8Array(await f.arrayBuffer()); S.name=f.name; S.boxes=[]; S.pages=[]; S.resultBytes=null; S.oldName=null; S.oldBlock=''; S.products=[]; renderProducts();
   S.reps = S.reps.filter(r=>!r.auto); if(!S.reps.length) S.reps.push({from:'',to:''}); renderReps();
   try{
     S.pdf = await pdfjsLib.getDocument({data:S.bytes.slice(0)}).promise;
@@ -470,7 +490,7 @@ function suggestSwaps(){
   for(const w of block.match(/(?:https?:\/\/)?www\.[\w-]+\.[\w.\/-]+/gi)||[]) add(w, myEmail||'');
   for(const ph of block.match(/\+?\(?\d[\d ()\/.-]{7,}\d/g)||[]) add(ph.trim(), myPhone||'');
   // 3. product brand names marked ™ / ® in the text
-  const big = S.logoKey==='industrial' ? 'Epobond Ultra' : myBrand;
+  const prods=[]; const pseen=new Set();
   for(const P of S.pages) for(const ln of P.lines){
     const items=ln.items;
     for(let i=0;i<items.length;i++){
@@ -480,15 +500,50 @@ function suggestSwaps(){
       let src=null;
       if(markHere){ const m=it.str.match(/([A-Za-z][\w-]{2,})\s*[™®]/); if(m) src=m[1]; }
       else if(markNext){ const m=it.str.match(/([A-Za-z][\w-]{2,})\s*$/); if(m) src=m[1]; }
-      if(src && !/epobond/i.test(src)) add(src, big);
+      if(src && !/epobond/i.test(src) && !pseen.has(src.toLowerCase()) && !seen.has(src.toLowerCase())){ pseen.add(src.toLowerCase()); prods.push({from:src, to:'', keep:false, answered:false}); }
     }
   }
+  if(prods.length && !(S.products||[]).length){ S.products=prods; renderProducts(); setTimeout(openProducts, 600); }
   if(!out.length) return;
   S.reps = S.reps.filter(r=>r.from && r.from.trim() && !r.auto);
   S.reps = out.concat(S.reps.filter(r=>!seen.has(r.from.toLowerCase())));
   store.set('reps', S.reps.filter(r=>!r.auto));
   renderReps(); countMatches();
 }
+
+/* ---------- product names: ask the person ---------- */
+function renderProducts(){
+  const box=$('prodBox'), list=$('prodList'); const ps=S.products||[];
+  box.hidden = !ps.length; list.innerHTML='';
+  for(const p of ps){
+    const d=document.createElement('div'); d.className='matches'; d.style.margin='0 0 4px';
+    d.innerHTML = `<b style="color:var(--ink)">${esc(p.from)}</b> → ` + (p.keep ? 'kept as is' : (p.to ? `<b style="color:var(--ink)">${esc(p.to)}</b>` : '<span class="need">not named yet</span>'));
+    list.appendChild(d);
+  }
+}
+function openProducts(){
+  const ps=S.products||[]; if(!ps.length) return;
+  const rows=$('prodRows'); rows.innerHTML='';
+  ps.forEach(p=>{
+    const d=document.createElement('div'); d.className='prod'+(p.keep?' keep':'');
+    d.innerHTML=`<div class="old">${esc(p.from)} <span>found in the document</span></div><input type="text" placeholder="New product name" value="${esc(p.to||'')}"><div class="chips"><button data-v="Epobond Ultra">Epobond Ultra</button><button data-v="Epobond">Epobond</button><button data-k="1">Keep ${esc(p.from)}</button></div>`;
+    const inp=d.querySelector('input'); const chips=[...d.querySelectorAll('.chips button')];
+    const paint=()=>{ d.classList.toggle('keep',p.keep); chips.forEach(c=>c.classList.toggle('on', c.dataset.k ? p.keep : (!p.keep && c.dataset.v===p.to))); };
+    inp.oninput=()=>{ p.to=inp.value; p.keep=false; paint(); };
+    chips.forEach(c=>c.onclick=()=>{ if(c.dataset.k){ p.keep=true; } else { p.to=c.dataset.v; p.keep=false; inp.value=p.to; } paint(); });
+    paint(); rows.appendChild(d);
+  });
+  $('prodDlg').classList.add('show');
+  setTimeout(()=>{ const f=rows.querySelector('input'); if(f && !f.value) f.focus(); }, 50);
+}
+function productsPending(){ return (S.products||[]).some(p=>!p.keep && !(p.to||'').trim()); }
+$('prodOk').onclick=()=>{
+  if(productsPending()){ toast('Type a name or tap "Keep" for each product'); return; }
+  (S.products||[]).forEach(p=>p.answered=true);
+  $('prodDlg').classList.remove('show'); renderProducts(); markDirty(); countMatches();
+};
+$('prodLater').onclick=()=>{ $('prodDlg').classList.remove('show'); renderProducts(); markDirty(); countMatches(); };
+$('prodEdit').onclick=openProducts;
 
 /* ---------- drawing boxes ---------- */
 function attachDrawing(P){
@@ -672,6 +727,7 @@ async function buildPdf(){
 }
 
 async function ensureResult(){
+  if(productsPending()){ openProducts(); throw {code:'need_products'}; }
   if(S.resultBytes && !S.dirty) return S.resultBytes;
   setStatus('Building…');
   const {bytes, replaced, removed} = await buildPdf();
@@ -702,7 +758,7 @@ function showTab(t){
   $('pagesEdit').hidden = t!=='edit'; $('pagesResult').hidden = t!=='result';
 }
 $('tabEdit').onclick=()=>showTab('edit');
-$('tabResult').onclick=async()=>{ if(!S.bytes) return; showTab('result'); try{ await renderResult(); }catch(e){ console.error(e); toast('Could not build the result'); setStatus(''); } };
+$('tabResult').onclick=async()=>{ if(!S.bytes) return; showTab('result'); try{ await renderResult(); }catch(e){ if(e&&e.code==='need_products'){ showTab('edit'); return; } console.error(e); toast('Could not build the result'); setStatus(''); } };
 $('previewBtn').onclick=()=>$('tabResult').onclick();
 
 /* ---------- download ---------- */
@@ -710,7 +766,7 @@ let downloads = null;
 (async()=>{ try{ if(window.claude && claude.use) downloads = await claude.use('downloads'); }catch(e){} })();
 $('dlBtn').onclick = async ()=>{
   if(!S.bytes) return;
-  let bytes; try{ bytes = await ensureResult(); }catch(e){ console.error(e); toast('Could not build the PDF'); return; }
+  let bytes; try{ bytes = await ensureResult(); }catch(e){ if(e&&e.code==='need_products') return; console.error(e); toast('Could not build the PDF'); return; }
   const base = S.name.replace(/\.pdf$/i,'');
   const brand = (($('details').value.split('\n')[0]||'Epobond').trim().split(/\s+/)[0]||'Epobond').replace(/[^\w-]/g,'');
   const filename = `${base}_${brand}.pdf`;
