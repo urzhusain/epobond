@@ -134,11 +134,12 @@ details.adv summary{cursor:pointer;font-size:13px;color:var(--muted);margin-top:
      <button data-mode="details"><span class="sw" style="background:var(--details)"></span>Details</button>
      <button data-mode="erase"><span class="sw" style="background:var(--erase)"></span>Erase</button>
    </div>
-   <p class="hint" id="modeHint">Pick a tool, then drag a box on the page over the old logo or the old name and address. Logos found in the file are marked for you. Tap ✕ on a box to remove it.</p>
+   <p class="hint" id="modeHint">Old logos (blue) and the old name, address and contacts (green) are found and marked for you. If something was missed, pick a tool and drag a box over it. Tap ✕ on a box to remove it.</p>
   </div>
 
   <div class="card">
-   <h2><span class="step">4</span>Replace words <span style="text-transform:none;letter-spacing:0;font-weight:500">(optional)</span></h2>
+   <h2><span class="step">4</span>Replace words</h2>
+   <p class="hint" style="margin:0 0 8px">The old company name, its emails and phone numbers, and product names marked ™ or ® are filled in for you. Check them and add anything else, such as other product names.</p>
    <div id="reps"></div>
    <button id="addRep">+ Add word</button>
    <label class="chk"><input type="checkbox" id="optCase" checked> Ignore capitals (PARSON, Parson…)</label>
@@ -204,7 +205,7 @@ S.logo = S.logoKey==='custom' ? store.get('logo', LOGOS.industrial) : (LOGOS[S.l
 $('pvIndustrial').src = LOGOS.industrial; $('pvConsumer').src = LOGOS.consumer;
 function showLogo(){ $('logoThumb').src = S.logo; document.querySelectorAll('.preset').forEach(b=>b.classList.toggle('on', b.dataset.logo===S.logoKey)); }
 showLogo();
-document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{ S.logoKey=b.dataset.logo; S.logo=LOGOS[S.logoKey]; store.set('logoKey',S.logoKey); showLogo(); markDirty(); toast((S.logoKey==='industrial'?'Industrial (Epobond Ultra)':'Consumer (Epobond)')+' logo selected'); });
+document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{ S.logoKey=b.dataset.logo; S.logo=LOGOS[S.logoKey]; store.set('logoKey',S.logoKey); showLogo(); markDirty(); if(S.pages.length) suggestSwaps(); toast((S.logoKey==='industrial'?'Industrial (Epobond Ultra)':'Consumer (Epobond)')+' logo selected'); });
 $('logoBtn').onclick = ()=> $('logoFile').click();
 $('logoFile').onchange = e => {
   const f = e.target.files[0]; if(!f) return;
@@ -229,8 +230,8 @@ function renderReps(){
     const d=document.createElement('div'); d.className='rep';
     d.innerHTML = `<input type="text" placeholder="Old word, e.g. Parson" value="${esc(r.from)}"><span>→</span><input type="text" placeholder="New word, e.g. Epobond" value="${esc(r.to)}"><button title="Remove">✕</button>`;
     const [a,,b,x] = d.children;
-    a.oninput=()=>{ r.from=a.value; store.set('reps',S.reps); markDirty(); countMatchesSoon(); };
-    b.oninput=()=>{ r.to=b.value; store.set('reps',S.reps); markDirty(); };
+    a.oninput=()=>{ r.from=a.value; r.auto=false; store.set('reps',S.reps.filter(x=>!x.auto)); markDirty(); countMatchesSoon(); };
+    b.oninput=()=>{ r.to=b.value; r.auto=false; store.set('reps',S.reps.filter(x=>!x.auto)); markDirty(); };
     x.onclick=()=>{ S.reps.splice(i,1); if(!S.reps.length) S.reps.push({from:'',to:''}); store.set('reps',S.reps); renderReps(); markDirty(); countMatches(); };
     box.appendChild(d);
   });
@@ -265,7 +266,7 @@ document.querySelectorAll('.modes button').forEach(b=>{
     S.mode = (S.mode===b.dataset.mode) ? null : b.dataset.mode;
     document.querySelectorAll('.modes button').forEach(x=>x.classList.toggle('on', x.dataset.mode===S.mode));
     document.querySelectorAll('.ov').forEach(o=>o.classList.toggle('drawing', !!S.mode));
-    $('modeHint').textContent = S.mode ? ({logo:'Drag over the old logo. The new logo is fitted inside the box.',details:'Drag over the old company name, address and contacts. Your details text is fitted inside the box.',erase:'Drag over anything else you want blanked out.'}[S.mode] + ' Tap the tool again to scroll freely.') : 'Pick a tool, then drag a box on the page over the old logo or the old name and address. Logos found in the file are marked for you. Tap ✕ on a box to remove it.';
+    $('modeHint').textContent = S.mode ? ({logo:'Drag over the old logo. The new logo is fitted inside the box.',details:'Drag over the old company name, address and contacts. Your details text is fitted inside the box.',erase:'Drag over anything else you want blanked out.'}[S.mode] + ' Tap the tool again to scroll freely.') : 'Old logos (blue) and the old name, address and contacts (green) are found and marked for you. If something was missed, pick a tool and drag a box over it. Tap ✕ on a box to remove it.';
   };
 });
 
@@ -281,7 +282,8 @@ async function loadFile(f){
   if(!window.pdfjsLib || !window.PDFLib){ toast('The PDF tools did not load. Check your connection and reload.'); return; }
   if(!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)){ toast('Please choose a PDF file'); return; }
   setStatus('Opening…');
-  S.bytes = new Uint8Array(await f.arrayBuffer()); S.name=f.name; S.boxes=[]; S.pages=[]; S.resultBytes=null;
+  S.bytes = new Uint8Array(await f.arrayBuffer()); S.name=f.name; S.boxes=[]; S.pages=[]; S.resultBytes=null; S.oldName=null; S.oldBlock='';
+  S.reps = S.reps.filter(r=>!r.auto); if(!S.reps.length) S.reps.push({from:'',to:''}); renderReps();
   try{
     S.pdf = await pdfjsLib.getDocument({data:S.bytes.slice(0)}).promise;
   }catch(err){ setStatus(''); toast('Could not open this PDF'); console.error(err); return; }
@@ -290,6 +292,7 @@ async function loadFile(f){
   const host=$('pagesEdit'); host.innerHTML='';
   for(let i=1;i<=S.pdf.numPages;i++){ await renderEditPage(i, host); }
   autoDetectLogos();
+  autoDetectDetails();
   drawAllBoxes(); countMatches();
   $('previewBtn').disabled=false; $('dlBtn').disabled=false; $('tabResult').disabled=false;
   setStatus(`${S.pdf.numPages} page${S.pdf.numPages>1?'s':''} ready`);
@@ -404,6 +407,87 @@ function autoDetectLogos(){
     }
   }
   if(n) toast(`Found ${n} logo/image${n>1?'s':''}, marked for the new logo`);
+}
+
+/* old company name / address / contact block, found in page headers and footers */
+const CONTACT_RE = /(phone|tel\b|tel[.:]|fax|mobile|mob[.:]|e-?mail|www\.|https?:\/\/|[\w.+-]+@[\w-]+\.[\w.]+|\+?\d[\d ()\/.-]{7,}\d|suite|road|street|\bst\.|avenue|\bave\b|p\.?o\.? box|zip|\b\d{5,6}\b)/i;
+function autoDetectDetails(){
+  let found=0;
+  for(const P of S.pages){
+    const H=P.vp1.height, view=P.vp1.viewBox, yTop=view[3], yBot=view[1];
+    const inZone = ln => (ln.y > yTop - H*0.25) || (ln.y < yBot + H*0.13);
+    const lines = P.lines.filter(l=>l.text.trim() && inZone(l)).sort((a,b)=>b.y-a.y);
+    const used=new Set();
+    for(const seed of lines){
+      if(used.has(seed) || !CONTACT_RE.test(seed.text)) continue;
+      const group=[seed]; used.add(seed);
+      let grew=true;
+      while(grew){
+        grew=false;
+        for(const l of lines){
+          if(used.has(l) || l.size>16) continue;
+          const sameZone = (l.y > yTop - H*0.25) === (seed.y > yTop - H*0.25);
+          if(!sameZone) continue;
+          const near = group.some(g => Math.abs(g.y-l.y) <= 1.9*Math.max(g.size,l.size));
+          if(near){ group.push(l); used.add(l); grew=true; }
+        }
+      }
+      // skip blocks already covered by a box the person drew
+      const x0=Math.min(...group.map(g=>g.x0))-7, x1=Math.max(...group.map(g=>g.x1))+7;
+      const lo=Math.min(...group.map(g=>g.y-g.size*0.75)), hi=Math.max(...group.map(g=>g.y+g.size*1.0));
+      const r=[x0,lo,x1,hi];
+      if(S.boxes.some(b=>b.page===P.index && b.type==='details' && !(b.r[2]<r[0]||b.r[0]>r[2]||b.r[3]<r[1]||b.r[1]>r[3]))) continue;
+      S.boxes.push({page:P.index, type:'details', r, auto:true}); found++;
+      if(!S.oldName){ const top=group.slice().sort((a,b)=>b.y-a.y)[0]; if(!CONTACT_RE.test(top.text)) S.oldName=top.text.trim(); }
+      S.oldBlock = (S.oldBlock||'') + ' ' + group.map(g=>g.text).join(' ');
+    }
+  }
+  suggestSwaps();
+  if(found) setTimeout(()=>toast(`Found the old company details${found>1?' in '+found+' places':''}. They'll be replaced with yours.`, 3200), 2800);
+}
+
+/* Automatic swaps for step 4: old company name, its emails/phones/websites, and ™/® brand names */
+function suggestSwaps(){
+  const det = $('details').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  const myFirst = (det[0]||'Epobond').split(/\s+/)[0]||'Epobond';
+  const myBrand = myFirst[0].toUpperCase()+myFirst.slice(1).toLowerCase();
+  const all = det.join(' ');
+  const myEmail = (all.match(/[\w.+-]+@[\w-]+\.[\w.]+/)||[''])[0];
+  const myPhone = ((all.match(/(?:phone|tel|mob(?:ile)?)[:.\s]*([+\d][\d ()\/.-]{6,}\d)/i)||[])[1]) || ((all.match(/\+?\d[\d ()\/.-]{7,}\d/)||[''])[0]);
+  const out=[]; const seen=new Set();
+  const add=(from,to)=>{ from=(from||'').trim(); if(from.length<3) return; const k=from.toLowerCase(); if(seen.has(k)||k===String(to).toLowerCase()) return; seen.add(k); out.push({from,to,auto:true}); };
+  // 1. old company name: full name first, then its main word
+  if(S.oldName){
+    const full=S.oldName.replace(/\s+/g,' ').replace(/[.,]+$/,'');
+    add(full, myBrand);
+    const stop=/^(the|m\/s|messrs|al|el|an|and|co|inc|ltd|llc|pvt|corp|company|group)$/i;
+    const word=(full.split(/[\s,.&]+/).find(w=>w.length>=3 && !stop.test(w))||'').replace(/[^\w-]/g,'');
+    if(word.length>=3) add(word[0].toUpperCase()+word.slice(1).toLowerCase(), myBrand);
+  }
+  // 2. old emails, websites, phone/fax numbers from the old details block
+  const block = S.oldBlock||'';
+  for(const e of block.match(/[\w.+-]+@[\w-]+\.[\w.]+/g)||[]) add(e, myEmail||myBrand);
+  for(const w of block.match(/(?:https?:\/\/)?www\.[\w-]+\.[\w.\/-]+/gi)||[]) add(w, myEmail||'');
+  for(const ph of block.match(/\+?\(?\d[\d ()\/.-]{7,}\d/g)||[]) add(ph.trim(), myPhone||'');
+  // 3. product brand names marked ™ / ® in the text
+  const big = S.logoKey==='industrial' ? 'Epobond Ultra' : myBrand;
+  for(const P of S.pages) for(const ln of P.lines){
+    const items=ln.items;
+    for(let i=0;i<items.length;i++){
+      const it=items[i]; const next=items[i+1];
+      const markHere = /[™®]/.test(it.str);
+      const markNext = next && (/^[\s]*[™®]/.test(next.str) || (next.symbol && /[]/.test(next.str)));
+      let src=null;
+      if(markHere){ const m=it.str.match(/([A-Za-z][\w-]{2,})\s*[™®]/); if(m) src=m[1]; }
+      else if(markNext){ const m=it.str.match(/([A-Za-z][\w-]{2,})\s*$/); if(m) src=m[1]; }
+      if(src && !/epobond/i.test(src)) add(src, big);
+    }
+  }
+  if(!out.length) return;
+  S.reps = S.reps.filter(r=>r.from && r.from.trim() && !r.auto);
+  S.reps = out.concat(S.reps.filter(r=>!seen.has(r.from.toLowerCase())));
+  store.set('reps', S.reps.filter(r=>!r.auto));
+  renderReps(); countMatches();
 }
 
 /* ---------- drawing boxes ---------- */
